@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>A Tara Talk™✨ about the Serverless Application Model</title>
+<meta name="author" content="Sean Duckett"/>
+<style type="text/css">
+.underline { text-decoration: underline; }
+</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js/dist/reveal.css"/>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js/dist/theme/black.css" id="theme"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js/plugin/highlight/zenburn.css"/>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+<section id="sec-title-slide">
+<h1 class="title">A Tara Talk™✨ about the Serverless Application Model</h1><h2 class="author">Sean Duckett</h2><p class="date">Created: 2021-08-02 Mon 14:32</p>
+</section>
+
+<section>
+<section id="slide-1">
+<h2 id="1"><span class="section-number-2">1</span> Serverless Application Model (SAM)</h2>
+<ul>
+<li>open source framework for building serverlesss apps on AWS</li>
+<li>lambda functions + event sources + other resources = application
+<ul>
+<li><code>turbovote-backup-api</code></li>
+<li><code>dw-lambdas-twilio-metrics</code></li>
+<li>S3 event processing
+<ul>
+<li>TV user ETL writes CSVs for a data warehouse, uploads to S3</li>
+<li>Lambda function reads the new CSV and writes to Postgres DB</li>
+
+</ul></li>
+<li>DynamoDB + API Gateway + λ functions = a link shortening API</li>
+<li>maybe <code>zendesk-works</code> or <code>sms-works</code> are serverless applications
+in disguise?</li>
+
+</ul></li>
+<li>template specification (YAML) + CLI tool = cloud resource creation</li>
+<li>also the name of a CLI tool, <code>sam</code></li>
+
+</ul>
+
+</section>
+</section>
+<section>
+<section id="slide-2">
+<h2 id="2"><span class="section-number-2">2</span> SAM Templates</h2>
+<div class="outline-text-2" id="text-2">
+</div>
+</section>
+<section id="slide-2-1">
+<h3 id="2-1"><span class="section-number-3">2.1</span> are supersets of CloudFormation templates</h3>
+<ul>
+<li>any valid CloudFormation resources can exist in a SAM template</li>
+<li>add a <code>Global</code> section for properties common to all resources</li>
+<li>concise abstractions of AWS services, sans cute names
+<ul>
+<li><code>AWS::Serverless::Api</code> → <code>AWS::ApiGateway::RestApi</code></li>
+<li><code>AWS::Serverless::Application</code> → <code>AWS::CloudFormation::Stack</code></li>
+<li><code>AWS::Serverless::SimpleTable</code> → <code>AWS::DynamoDB::Table</code></li>
+<li><code>AWS::Serverless::Function</code> → <code>AWS::Lambda::Function</code></li>
+
+</ul></li>
+
+</ul>
+
+</section>
+</section>
+<section>
+<section id="slide-3">
+<h2 id="3"><span class="section-number-2">3</span> Example SAM Resources</h2>
+<div class="outline-text-2" id="text-3">
+</div>
+</section>
+<section id="slide-3-1">
+<h3 id="3-1"><span class="section-number-3">3.1</span> A Serverless API</h3>
+<pre class="example" id="org900fe22">
+ShortenApi:
+  Type: AWS::Serverless::Api
+  Properties:
+    Auth:
+      ApiKeyRequired: true
+      UsagePlan:
+        CreateUsagePlan: PER_API
+        Description: Basic rate limiting
+        Throttle:
+          BurstLimit: 100
+          RateLimit: 50
+        Tags:
+          - Key: Product
+            Value: TurboVote
+          - Key: Environment
+            Value: !Ref paramEnvironment
+          - Key: Branch
+            Value: !Ref paramFeatureBranch
+    Domain:
+      DomainName: !Sub "${paramFeatureBranch}.${paramEnvironment}.t-vote.org"
+      CertificateArn: !Ref DeploymentCertificate
+      Route53:
+        HostedZoneId: !Ref paramZoneId
+    StageName: !Sub "${paramEnvironment}"
+
+DeploymentCertificate:
+  Type: AWS::CertificateManager::Certificate
+  Properties:
+    DomainName: !Sub "${paramFeatureBranch}.${paramEnvironment}.t-vote.org"
+    ValidationMethod: DNS
+    DomainValidationOptions:
+      - DomainName: !Sub "${paramFeatureBranch}.${paramEnvironment}.t-vote.org"
+        HostedZoneId: !Ref paramZoneId
+</pre>
+
+</section>
+<section id="slide-3-2">
+<h3 id="3-2"><span class="section-number-3">3.2</span> A Lambda Function</h3>
+<pre class="example" id="org914e61b">
+CreateShortURLFunction:
+  Type: AWS::Serverless::Function
+  Properties:
+    FunctionName: !Sub "${paramServiceName}-${paramEnvironment}-${paramFeatureBranch}-shortenURL"
+    CodeUri: src
+    Handler: index.shorten
+    Runtime: nodejs12.x
+    Timeout: 15
+    AutoPublishAlias: latest
+    Policies:
+      - DynamoDBCrudPolicy:
+          TableName: !If [IsProduction, "tv-url-shortener-production", "tv-url-shortener-working"]
+    Environment:
+      Variables:
+        DDB_TABLE: !If [IsProduction, "tv-url-shortener-production", "tv-url-shortener-working"]
+        DDB_ENDPOINT: undefined
+    Events:
+      ShortenURL:
+        Type: Api
+        Properties:
+          RestApiId: !Ref ShortenApi
+          Path: /shorten
+          Method: post
+          Auth:
+            ApiKeyRequired: true
+</pre>
+
+</section>
+</section>
+<section>
+<section id="slide-4">
+<h2 id="4"><span class="section-number-2">4</span> How to Deploy Things 🚀</h2>
+<div class="outline-text-2" id="text-4">
+</div>
+</section>
+<section id="slide-4-1">
+<h3 id="4-1"><span class="section-number-3">4.1</span> validate the template!</h3>
+<ul>
+<li><code>sam validate</code></li>
+<li>is YAML well-formed and resources defined correctly?</li>
+<li>requires an IAM role to confirm resource creatability, see buckets, etc</li>
+
+</ul>
+
+</section>
+<section id="slide-4-2">
+<h3 id="4-2"><span class="section-number-3">4.2</span> build /package the assets!</h3>
+<ul>
+<li><code>sam build</code> (or equivalent)
+<ul>
+<li>compile / transpile your code</li>
+<li><p>
+creates a directory for each lambda function
+</p>
+<pre class="example" id="org07c670a">
+% ll .aws-sam/build/CreateShortURLFunction
+total 5488
+-rw-r--r--  1 smd  staff   1.1K Aug  2 10:33 app.js.LICENSE.txt
+-rw-r--r--  1 smd  staff   304K Aug  2 13:14 app.js
+-rw-r--r--  1 smd  staff   2.4M Aug  2 13:14 app.js.map
+</pre></li>
+
+</ul></li>
+<li><code>sam package</code>
+<ul>
+<li>builds a compressed archive of your code, uploads it to an S3 bucket</li>
+<li>adds a CodeURI to the base template once uploaded</li>
+<li>outputs a CloudFormation template that can be deployed</li>
+
+</ul></li>
+
+</ul>
+
+</section>
+<section id="slide-4-3">
+<h3 id="4-3"><span class="section-number-3">4.3</span> deploy the assets!</h3>
+<ul>
+<li><code>sam deploy</code></li>
+<li>the compiled template actually created AWS resources</li>
+
+</ul>
+
+</section>
+</section>
+<section>
+<section id="slide-5">
+<h2 id="5"><span class="section-number-2">5</span> Creating AWS resources from a CI job</h2>
+<div class="outline-text-2" id="text-5">
+</div>
+</section>
+<section id="slide-5-1">
+<h3 id="5-1"><span class="section-number-3">5.1</span> Uses plugins</h3>
+<pre class="example" id="org691a40b">
+- command: "script/build"
+  branches: "main testing"
+  label: "Validate &amp; build Lambda resources"
+  plugins:
+    - artifacts#v1.3.0:
+        upload: ".aws-sam/build/*.yaml"
+    - ecr#v2.3.0:
+        login: true
+        region: "us-west-2"
+    - docker#v3.8.0:
+        image: public.ecr.aws/sam/build-nodejs12.x:latest
+        always-pull: true
+        propagate-aws-auth-tokens: true
+        propagate-environment: true
+        environment:
+          - "AWS_DEFAULT_REGION=us-west-2"
+    - cultureamp/aws-assume-role#v0.2.0:
+        role: "arn:aws:iam::296810667601:role/url-shortener-deploy"
+</pre>
+</section>
+<section id="slide-5-2">
+<h3 id="5-2"><span class="section-number-3">5.2</span> Look at BK!</h3>
+
+</section>
+</section>
+<section>
+<section id="slide-6">
+<h2 id="6"><span class="section-number-2">6</span> References</h2>
+<ul>
+<li><a href="https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/what-is-sam.html">https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/what-is-sam.html</a></li>
+<li><a href="https://github.com/buildkite-plugins/artifacts-buildkite-plugin">https://github.com/buildkite-plugins/artifacts-buildkite-plugin</a></li>
+<li><a href="https://github.com/democracyworks/lambda-url-shortener/pull/1">https://github.com/democracyworks/lambda-url-shortener/pull/1</a></li>
+<li><a href="https://github.com/democracyworks/turbovote-data-warehouse">https://github.com/democracyworks/turbovote-data-warehouse</a></li>
+
+</ul>
+</section>
+</section>
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js/plugin/highlight/highlight.js"></script>
+<script>
+// Full list of configuration options available here:
+// https://github.com/hakimel/reveal.js#configuration
+Reveal.initialize({
+
+controls: true,
+progress: true,
+history: false,
+center: true,
+slideNumber: 'c',
+rollingLinks: false,
+keyboard: true,
+mouseWheel: false,
+fragmentInURL: false,
+hashOneBasedIndex: false,
+pdfSeparateFragments: true,
+overview: true,
+width: 1400,
+height: 1000,
+
+transition: 'convex',
+transitionSpeed: 'default',
+
+// Plugins with reveal.js 4.x
+plugins: [ RevealHighlight ],
+
+// Optional libraries used to extend reveal.js
+dependencies: [
+]
+
+});
+</script>
+</body>
+</html>

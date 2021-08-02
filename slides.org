@@ -1,0 +1,155 @@
+#+OPTIONS: toc:nil reveal_width:1400 reveal_height:1000
+#+REVEAL_THEME: black
+#+REVEAL_ROOT: https://cdn.jsdelivr.net/npm/reveal.js
+#+REVEAL_VERSION: 4
+#+REVEAL_PLUGINS: (highlight)
+
+#+Title: A Tara Talk™✨ about the Serverless Application Model
+#+Author: Sean Duckett
+
+* Serverless Application Model (SAM)
+  - open source framework for building serverlesss apps on AWS
+  - lambda functions + event sources + other resources = application
+    - =turbovote-backup-api=
+    - =dw-lambdas-twilio-metrics=
+    - S3 event processing
+      - TV user ETL writes CSVs for a data warehouse, uploads to S3
+      - Lambda function reads the new CSV and writes to Postgres DB
+    - DynamoDB + API Gateway + λ functions = a link shortening API
+    - maybe =zendesk-works= or =sms-works= are serverless applications
+      in disguise?
+  - template specification (YAML) + CLI tool = cloud resource creation
+  - also the name of a CLI tool, =sam=
+
+* SAM Templates
+** are supersets of CloudFormation templates
+  - any valid CloudFormation resources can exist in a SAM template
+  - add a =Global= section for properties common to all resources
+  - concise abstractions of AWS services, sans cute names
+    - =AWS::Serverless::Api= → =AWS::ApiGateway::RestApi=
+    - =AWS::Serverless::Application= → =AWS::CloudFormation::Stack=
+    - =AWS::Serverless::SimpleTable= → =AWS::DynamoDB::Table=
+    - =AWS::Serverless::Function= → =AWS::Lambda::Function=
+
+* Example SAM Resources
+** A Serverless API
+#+BEGIN_EXAMPLE
+  ShortenApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          Description: Basic rate limiting
+          Throttle:
+            BurstLimit: 100
+            RateLimit: 50
+          Tags:
+            - Key: Product
+              Value: TurboVote
+            - Key: Environment
+              Value: !Ref paramEnvironment
+            - Key: Branch
+              Value: !Ref paramFeatureBranch
+      Domain:
+        DomainName: !Sub "${paramFeatureBranch}.${paramEnvironment}.t-vote.org"
+        CertificateArn: !Ref DeploymentCertificate
+        Route53:
+          HostedZoneId: !Ref paramZoneId
+      StageName: !Sub "${paramEnvironment}"
+
+  DeploymentCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub "${paramFeatureBranch}.${paramEnvironment}.t-vote.org"
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Sub "${paramFeatureBranch}.${paramEnvironment}.t-vote.org"
+          HostedZoneId: !Ref paramZoneId
+#+END_EXAMPLE
+
+** A Lambda Function
+#+BEGIN_EXAMPLE
+  CreateShortURLFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${paramServiceName}-${paramEnvironment}-${paramFeatureBranch}-shortenURL"
+      CodeUri: src
+      Handler: index.shorten
+      Runtime: nodejs12.x
+      Timeout: 15
+      AutoPublishAlias: latest
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !If [IsProduction, "tv-url-shortener-production", "tv-url-shortener-working"]
+      Environment:
+        Variables:
+          DDB_TABLE: !If [IsProduction, "tv-url-shortener-production", "tv-url-shortener-working"]
+          DDB_ENDPOINT: undefined
+      Events:
+        ShortenURL:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShortenApi
+            Path: /shorten
+            Method: post
+            Auth:
+              ApiKeyRequired: true
+#+END_EXAMPLE
+
+* How to Deploy Things 🚀
+** validate the template!
+   - =sam validate=
+   - is YAML well-formed and resources defined correctly?
+   - requires an IAM role to confirm resource creatability, see buckets, etc
+
+** build /package the assets!
+   - =sam build= (or equivalent)
+     - compile / transpile your code
+     - creates a directory for each lambda function
+       #+BEGIN_EXAMPLE
+% ll .aws-sam/build/CreateShortURLFunction
+total 5488
+-rw-r--r--  1 smd  staff   1.1K Aug  2 10:33 app.js.LICENSE.txt
+-rw-r--r--  1 smd  staff   304K Aug  2 13:14 app.js
+-rw-r--r--  1 smd  staff   2.4M Aug  2 13:14 app.js.map
+       #+END_EXAMPLE
+   - =sam package=
+     - builds a compressed archive of your code, uploads it to an S3 bucket
+     - adds a CodeURI to the base template once uploaded
+     - outputs a CloudFormation template that can be deployed
+
+** deploy the assets!
+   - =sam deploy=
+   - the compiled template actually created AWS resources
+
+* Creating AWS resources from a CI job
+** Uses plugins
+   #+BEGIN_EXAMPLE
+  - command: "script/build"
+    branches: "main testing"
+    label: "Validate & build Lambda resources"
+    plugins:
+      - artifacts#v1.3.0:
+          upload: ".aws-sam/build/*.yaml"
+      - ecr#v2.3.0:
+          login: true
+          region: "us-west-2"
+      - docker#v3.8.0:
+          image: public.ecr.aws/sam/build-nodejs12.x:latest
+          always-pull: true
+          propagate-aws-auth-tokens: true
+          propagate-environment: true
+          environment:
+            - "AWS_DEFAULT_REGION=us-west-2"
+      - cultureamp/aws-assume-role#v0.2.0:
+          role: "arn:aws:iam::296810667601:role/url-shortener-deploy"
+   #+END_example
+** Look at BK!
+
+* References
+  - https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/what-is-sam.html
+  - https://github.com/buildkite-plugins/artifacts-buildkite-plugin
+  - https://github.com/democracyworks/lambda-url-shortener/pull/1
+  - https://github.com/democracyworks/turbovote-data-warehouse
